@@ -52,7 +52,7 @@ The information written to these files is only whether the brances were taken or
 
 int main(int ac, char **av)
 {
-	int ncpus = sysconf(_SC_NPROCESSORS_CONF);
+	int ncpus = sysconf(_SC_NPROCESSORS_CONF); //number of cpus to capture trace for
 	int pfds[ncpus];
 	int bufsize;
 	char *pbuf[ncpus];
@@ -64,6 +64,7 @@ int main(int ac, char **av)
 			err("open /dev/simple-pt");
 
 		if (ioctl(pfds[i], SIMPLE_PT_SET_CPU, i) < 0) {
+			//unable to process SIMPLE_PT_SET_CPU request
 			close(pfds[i]);
 			pfds[i] = -1;
 			perror("SIMPLE_PT_SET_CPU");
@@ -73,14 +74,29 @@ int main(int ac, char **av)
 
 		if (ioctl(pfds[i], SIMPLE_PT_GET_SIZE, &bufsize) < 0)
 			err("SIMPLE_PT_GET_SIZE");
+		//setting the buffer size 
+
 
 		pbuf[i] = mmap(NULL, bufsize, PROT_READ, MAP_PRIVATE, pfds[i], 0);
+		/*First argument is the starting address for memory mapping. If addr is NULL, then the kernel chooses the address at which to create the mapping. 
+		Second argument is the length argument specifies the length of the mapping.
+		PROT_READ  Pages may be read
+		MAP_PRIVATE Create a private copy-on-write mapping
+		pdfs[i] file descriptor
+		Last argument is the offset in the file whose file descriptor is provided
+		*/
+
+
 		if (pbuf[i] == (void*)-1)
 			err("mmap on simplept");
 
 		char fn[1024];
 		snprintf(fn, sizeof fn, "%s.%d", av[1] ? av[1] : "ptout", i);
+
 		int fd = open(fn, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+		//O_TRUNC is to overwrite the files from start everytime a new trace is captured
+		//last argument is file permissions
+
 		if (fd < 0)
 			err("Opening output file");
 
@@ -92,11 +108,18 @@ int main(int ac, char **av)
 
 		unsigned len = 0;
 		if (*(uint64_t *)(pbuf[i] + offset))
+			//this if is only being execute  for the cpu which actually captures the trace
+			//for the other cpus, this if branch is not entered at all
 			len += write(fd, pbuf[i] + offset, bufsize - offset);
+
 		len += write(fd, pbuf[i], offset);
+		//Dont know what the separate writes are doing ????
+
 		printf("cpu %3d offset %6u, %5u KB, writing to %s\n", i, offset, len >> 10, fn);
 		close(fd);
+
 		if (len == 0)
+			//if nothing written to the file, then unlink file name
 			unlink(fn);
 	}
 

@@ -60,6 +60,7 @@ declare -a ARGS
 ARGS=($@)
 
 B=0
+#Get the arguments
 for ((j = 0; j < $#; j++)) ; do
 	if [ $B -ne 0 ] ; then
 		ARGS[$j]=${ARGS[$j]}
@@ -162,6 +163,7 @@ FORCE=${FORCE:-0}
 KEEP=${KEEP:-}
 PRINT_REGS=${PRINT_REGS:-0}
 
+
 if [ "$EUID" -ne 0 ] ; then
 	echo >&2 sptcmd needs to run as root
 	exit 1
@@ -175,18 +177,27 @@ if ! lsmod | grep -q simple_pt ; then
 		/sbin/modprobe simple-pt force=$FORCE
 	fi
 fi
+
 C=/sys/module/simple_pt/parameters
+
+
 if [ -n "$DUMP_ONLY" ] ; then
 	OLDSTART="`cat $C/start`"
 fi
+
 
 if [ "$KERNEL" != 1 -a "$COMM" = "" ] ; then
 	echo >&2 WARNING Using -K without a -c filter.
 	echo >&2 WARNING Decoder will not be able to trace multiple processes.
 fi
 
+
+
 T=/sys/kernel/debug/tracing
 
+
+
+#Disable current trace (option in sptcmd)
 if [ -n "$DISABLE" ] ; then
 	echo 0 > $C/start
 	if [ -z "$DUMP_ONLY" ] ; then
@@ -194,14 +205,22 @@ if [ -n "$DISABLE" ] ; then
 	fi
 fi
 
+
+#Actual trace that we are capturing currently
 if [ -z "$DUMP_ONLY" ] ; then
+	
+	#caturing only particular command using -c option
 	if [ -n "$COMM" ] ; then
 		echo $COMM > $C/comm_filter
+		#filter to be provided for capturing the command $COMM only
 		echo 1 > $C/cr3_filter
 	else
 		echo > $C/comm_filter
+		#No filter needs to be provided the cr3 register
 		echo 0 > $C/cr3_filter
 	fi
+	
+	#Setting the simple-pt parameters
 	echo $KERNEL > $C/kernel
 	echo $USERMODE > $C/user
 	echo $DISRETC > $C/dis_retc
@@ -213,42 +232,62 @@ if [ -z "$DUMP_ONLY" ] ; then
 	echo $MTC_FREQ > $C/mtc_freq
 	echo $CYC_THRESH > $C/cyc_thresh
 	echo $PSB_FREQ > $C/psb_freq
+	#Setting the simple-pt parameters
+
 	for (( r = 0; r < NUM_RANGE; r++ )) ; do
 		echo ${RANGE_START[$r]} > $C/addr${r}_start
 		echo ${RANGE_END[$r]} > $C/addr${r}_end
 		echo ${RANGE_CFG[$r]} > $C/addr${r}_cfg
 	done
+
+
 	for (( ; r < MAX_RANGE; r++ )) ; do
 		echo 0 > $C/addr${r}_cfg
 	done
+	
+
 	echo $START > $C/trace_start
 	echo $STOP > $C/trace_stop
 	echo > $T/trace
 	echo $ENUMALL > $C/enumerate_all
+	
 	if [ "$ENUMALL" != 0 ] ; then
 		grep . /proc/[0-9]*/maps > ${PREFIX}.maps
 		echo >&2 "Wrote initial process maps to ${PREFIX}.maps"
 	else
 		echo -n > ${PREFIX}.maps
 	fi
+	
 	ptfeature > ${PREFIX}.cpuid
 	echo 1 > $C/start
+	
 	if [ "$ENABLE_ONLY" != "" ] ; then
 		echo "PT running"
 		exit 0
 	fi
 	"$@"
 fi
+
+
+#print regs option in sptcmd
 if [ "$PRINT_REGS" != 0 ] ; then
 	ptregs
 fi
 echo 0 > $C/start
+
+
+
+#Only enable tracing but don't dump data (option in sptcmd)
 if [ -z "$KEEP" ] ; then
 	echo 0 > $T/events/pttp/exec_cr3/enable
 	echo 0 > $T/events/pttp/mmap_cr3/enable
 	echo 0 > $T/events/pttp/process_cr3/enable
 	echo 0 > $T/events/pttp/msr/enable
 fi
+
+
+
+#Dont dump data in current trace (option in sptcmd)
 if [ -z "$DONTDUMP" ] ; then
 	sptdump $PREFIX
 
@@ -275,6 +314,9 @@ if [ -z "$DONTDUMP" ] ; then
 	#done < /proc/modules >> ${PREFIX}.sideband
 	echo "Wrote sideband to ${PREFIX}.sideband"
 fi
+
+
+
 if [ -n "$DUMP_ONLY" ] ; then
 	echo $OLDSTART > $C/start
 fi

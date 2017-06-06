@@ -67,6 +67,8 @@ bool abstime;
 /* Includes branches and anything with a time. Always
  * flushed on any resyncs.
  */
+
+//instructions
 struct sinsn {
 	uint64_t ip;
 	uint64_t dst; /* For calls */
@@ -159,6 +161,7 @@ static double tsc_us(int64_t t)
 	return (t / (tsc_freq*1000));
 }
 
+
 static void print_time_indent(void)
 {
 	printf("%*s", 24, "");
@@ -182,6 +185,7 @@ static void print_time(uint64_t ts, uint64_t *last_ts,uint64_t *first_ts)
 
 bool dump_insn;
 bool dump_dwarf;
+
 
 static char *insn_class(enum pt_insn_class class)
 {
@@ -239,8 +243,11 @@ void dis_print_insn(struct dis *d, struct pt_insn *insn, uint64_t cr3)
 
 static void dis_init(void) {}
 
+//XED is used to disasamble the instructions directly 
+//and show them in the output after decoding
 #elif defined(HAVE_XED)
 
+//dis here means disasembled using XED
 struct dis {
 	xed_state_t state;
 	xed_print_info_t info;
@@ -473,6 +480,7 @@ static void print_output(struct sinsn *insnbuf, int sic,
 	}
 }
 
+//Main decoding function
 static int decode(struct pt_insn_decoder *decoder)
 {
 	struct global_pstate gps = { .first_ts = 0, .last_ts = 0 };
@@ -481,6 +489,10 @@ static int decode(struct pt_insn_decoder *decoder)
 	struct dis dis;
 
 	init_dis(&dis);
+	
+
+	//infinte loop in which to decode the trace captured
+	//all the pt_ calls are calls made to libipt functions for decoding purpose
 	for (;;) {
 		uint64_t pos;
 		int err = pt_insn_sync_forward(decoder);
@@ -498,12 +510,19 @@ static int decode(struct pt_insn_decoder *decoder)
 		struct sinsn insnbuf[NINSN];
 		uint64_t errip = 0;
 		uint32_t prev_ratio = 0;
+		
 		do {
 			int sic = 0;
 			while (!err && sic < NINSN - 1) {
+				
 				struct pt_insn insn;
-				struct pt_asid asid;
+				struct pt_asid asid; //related to assembly instruction 
+				
 				struct sinsn *si = &insnbuf[sic];
+
+				/***********/
+				/*Could not understand as it is almost completely dependant on the libipt library*/
+
 
 				insn.ip = 0;
 				pt_insn_time(decoder, &si->ts, NULL, NULL);
@@ -516,6 +535,7 @@ static int decode(struct pt_insn_decoder *decoder)
 				pt_insn_asid(decoder, &asid, sizeof(struct pt_asid));
 				si->cr3 = asid.cr3;
 				if (dump_insn)
+					//printing the disasembled instruction
 					print_insn(&insn, si->ts, &dis, si->cr3);
 				insncnt++;
 				uint32_t ratio;
@@ -561,6 +581,10 @@ static int decode(struct pt_insn_decoder *decoder)
 					continue;
 				if (si->ts)
 					last_ts = si->ts;
+
+
+
+				/***********/
 			}
 
 			if (detect_loop)
@@ -570,6 +594,8 @@ static int decode(struct pt_insn_decoder *decoder)
 		if (err == -pte_eos)
 			break;
 		pt_insn_get_offset(decoder, &pos);
+		
+
 		printf("%llx:%llx: error %s\n",
 				(unsigned long long)pos,
 				(unsigned long long)errip,
@@ -578,6 +604,7 @@ static int decode(struct pt_insn_decoder *decoder)
 	return 0;
 }
 
+//print the one time header at the start of the decoded output
 static void print_header(void)
 {
 	printf("%-9s %-5s %13s   %s\n",
@@ -587,6 +614,7 @@ static void print_header(void)
 		"OPERATION");
 }
 
+//usage instructions
 void usage(void)
 {
 	fprintf(stderr, "sptdecode --pt ptfile --elf elffile ...\n");
@@ -608,6 +636,7 @@ void usage(void)
 	exit(1);
 }
 
+//options for decoding
 struct option opts[] = {
 	{ "elf", required_argument, NULL, 'e' },
 	{ "pt", required_argument, NULL, 'p' },
@@ -630,7 +659,10 @@ int main(int ac, char **av)
 	bool use_tsc_time = false;
 	char *kernel_fn = NULL;
 
+	//libipt call (Intel PT) probaby to intiate the decoding
 	pt_config_init(&config);
+
+	//marking appropriate arguments
 	while ((c = getopt_long(ac, av, "e:p:is:ltdk:a", opts, NULL)) != -1) {
 		switch (c) {
 		case 'e':
@@ -679,6 +711,7 @@ int main(int ac, char **av)
 	}
 	if (use_tsc_time)
 		tsc_freq = 0;
+
 	if (decoder) {
 		if (kernel_fn)
 			read_elf(kernel_fn, image, 0, 0, 0, 0);
@@ -688,9 +721,14 @@ int main(int ac, char **av)
 	}
 	if (ac - optind != 0 || !decoder)
 		usage();
-	print_header();
-	decode(decoder);
+	
+	//calls are made to functions to decode the trace and give the output
+	print_header(); //the header is printed only once
+	decode(decoder); //then the trace is decoded and the disasembled instructions are printed
+
+	//these are calls to the Intel PT libipt code (these functions are not defined in simple-pt)
 	pt_image_free(image);
 	pt_insn_free_decoder(decoder);
+	
 	return 0;
 }

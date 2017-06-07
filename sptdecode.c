@@ -248,6 +248,7 @@ static void dis_init(void) {}
 #elif defined(HAVE_XED)
 
 //dis here means disasembled using XED
+//All function calls starting with xed_ are calls in the xed library (not defined in simple-pt)
 struct dis {
 	xed_state_t state;
 	xed_print_info_t info;

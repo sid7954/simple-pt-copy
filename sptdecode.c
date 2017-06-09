@@ -497,23 +497,27 @@ static int decode(struct pt_insn_decoder *decoder)
 	for (;;) {
 		uint64_t pos;
 		int err = pt_insn_sync_forward(decoder);
+		
+		//no trace captured or trace is over 
 		if (err < 0) {
 			pt_insn_get_offset(decoder, &pos);
 			printf("%llx: sync forward: %s\n",
 				(unsigned long long)pos,
 				pt_errstr(pt_errcode(err)));
+			//break out of the decoding infinite loop
 			break;
 		}
 
 		memset(&ps, 0, sizeof(struct local_pstate));
 
 		unsigned long insncnt = 0;
-		struct sinsn insnbuf[NINSN];
+		struct sinsn insnbuf[NINSN]; //instruction buffer
 		uint64_t errip = 0;
 		uint32_t prev_ratio = 0;
 		
 		do {
 			int sic = 0;
+			//NINSN=256, so probably there is some decoding in blocks of size of 256 instructions
 			while (!err && sic < NINSN - 1) {
 				
 				struct pt_insn insn;
@@ -525,7 +529,7 @@ static int decode(struct pt_insn_decoder *decoder)
 				/*Could not understand as it is almost completely dependant on the libipt library*/
 
 
-				insn.ip = 0;
+				insn.ip = 0; 
 				pt_insn_time(decoder, &si->ts, NULL, NULL);
 				err = pt_insn_next(decoder, &insn, sizeof(struct pt_insn));
 				if (err < 0) {
@@ -538,7 +542,7 @@ static int decode(struct pt_insn_decoder *decoder)
 				if (dump_insn)
 					//printing the disasembled instruction
 					print_insn(&insn, si->ts, &dis, si->cr3);
-				insncnt++;
+				insncnt++; //increase the instruction count
 				uint32_t ratio;
 				si->ratio = 0;
 				pt_insn_core_bus_ratio(decoder, &ratio);

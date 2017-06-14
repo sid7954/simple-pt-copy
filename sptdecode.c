@@ -33,6 +33,7 @@
 #define _GNU_SOURCE 1
 #include <intel-pt.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <getopt.h>
@@ -64,11 +65,15 @@
 
 bool abstime;
 
+//#define BUF_SIZE 10000000
+int BUF_SIZE;
+//char instructions[BUF_SIZE];
+char* instructions;
+int tail;
+
 /* Includes branches and anything with a time. Always
  * flushed on any resyncs.
  */
-
-//instructions
 struct sinsn {
 	uint64_t ip;
 	uint64_t dst; /* For calls */
@@ -161,7 +166,6 @@ static double tsc_us(int64_t t)
 	return (t / (tsc_freq*1000));
 }
 
-
 static void print_time_indent(void)
 {
 	printf("%*s", 24, "");
@@ -185,7 +189,7 @@ static void print_time(uint64_t ts, uint64_t *last_ts,uint64_t *first_ts)
 
 bool dump_insn;
 bool dump_dwarf;
-
+bool decode_tail;
 
 static char *insn_class(enum pt_insn_class class)
 {
@@ -228,6 +232,19 @@ static void init_dis(struct dis *d)
 	ud_set_sym_resolver(&d->ud_obj, dis_resolve);
 }
 
+void dis_print_insn_tail(struct dis *d, struct pt_insn *insn, uint64_t cr3)
+{
+	d->cr3 = cr3;
+	if (insn->mode == ptem_32bit)
+		ud_set_mode(&d->ud_obj, 32);
+	else
+		ud_set_mode(&d->ud_obj, 64);
+	ud_set_pc(&d->ud_obj, insn->ip);
+	ud_set_input_buffer(&d->ud_obj, insn->raw, insn->size);
+	ud_disassemble(&d->ud_obj);
+	printf("%s", ud_insn_asm(&d->ud_obj));
+}
+
 void dis_print_insn(struct dis *d, struct pt_insn *insn, uint64_t cr3)
 {
 	d->cr3 = cr3;
@@ -243,12 +260,8 @@ void dis_print_insn(struct dis *d, struct pt_insn *insn, uint64_t cr3)
 
 static void dis_init(void) {}
 
-//XED is used to disasamble the instructions directly 
-//and show them in the output after decoding
 #elif defined(HAVE_XED)
 
-//dis here means disasembled using XED
-//All function calls starting with xed_ are calls in the xed library (not defined in simple-pt)
 struct dis {
 	xed_state_t state;
 	xed_print_info_t info;
@@ -275,6 +288,40 @@ static void init_dis(struct dis *d)
 	d->info.syntax = XED_SYNTAX_ATT;
 	d->info.disassembly_callback = dis_resolve;
 	d->info.context = d;
+}
+
+void dis_print_insn_tail(struct dis *d, struct pt_insn *insn, uint64_t cr3)
+{
+	xed_decoded_inst_t inst;
+	xed_error_enum_t err;
+	char out[256];
+
+	d->cr3 = cr3;
+	if (insn->mode == ptem_32bit)
+		xed_state_set_machine_mode(&d->state,
+					   XED_MACHINE_MODE_LEGACY_32);
+	else
+		xed_state_set_machine_mode(&d->state,
+					   XED_MACHINE_MODE_LONG_64);
+	xed_decoded_inst_zero_set_mode(&inst, &d->state);
+	err = xed_decode(&inst, insn->raw, insn->size);
+	if (err != XED_ERROR_NONE) {
+		printf("%s", xed_error_enum_t2str(err));
+		return;
+	}
+	d->info.p = &inst;
+	d->info.buf = out;
+	d->info.blen = sizeof(out);
+	d->info.runtime_address = insn->ip;
+	if (!xed_format_generic(&d->info))
+		strcpy(out, "Cannot print");
+	//printf("%s", out);
+    int i;
+    for(i=0;i<strlen(out);i++)                                                                                                                                                                          
+    {
+        instructions[tail]=out[i];
+        tail=(tail+1) % BUF_SIZE;
+    }
 }
 
 void dis_print_insn(struct dis *d, struct pt_insn *insn, uint64_t cr3)
@@ -313,12 +360,61 @@ static void dis_init(void)
 
 struct dis {};
 static void init_dis(struct dis *d) {}
+void dis_print_insn_tail(struct dis *d, struct pt_insn *insn, uint64_t cr3) {}
 void dis_print_insn(struct dis *d, struct pt_insn *insn, uint64_t cr3) {}
 static void dis_init(void) {}
 
 #endif
 
 #define NUM_WIDTH 35
+
+//#define BUF_SIZE 1000
+char buffer[128];
+
+//char instructions[BUF_SIZE];
+//int tail;
+
+static void print_insn_tail(struct pt_insn *insn, uint64_t ts,
+		       struct dis *d,
+		       uint64_t cr3)
+{
+    int i;
+	int n=0;
+	int temp=0;
+    memset(buffer,0,sizeof(buffer));
+    temp+=sprintf(buffer+temp, "%llx %llu %5s insn: ", (unsigned long long)insn->ip, (unsigned long long)ts, insn_class(insn->iclass));
+    for (i = 0; i < insn->size; i++)
+		n += sprintf(buffer+temp+n,"%02x ", insn->raw[i]); 
+	temp+=n;
+    temp+=sprintf(buffer+temp,"%*s", NUM_WIDTH - n, "");   
+    for(i=0;i<temp;i++)                                                                                                                                                                                   
+    {
+        instructions[tail]=buffer[i];
+        tail=(tail+1) % BUF_SIZE;
+    }
+    
+    dis_print_insn_tail(d,insn,cr3);
+    
+    memset(buffer,0,sizeof(buffer));
+    temp=0;
+    if (insn->enabled)
+		temp+=sprintf(buffer+temp,"\tENA");
+	if (insn->disabled)
+		temp+=sprintf(buffer+temp,"\tDIS");
+	if (insn->resumed)
+		temp+=sprintf(buffer+temp,"\tRES");
+	if (insn->interrupted)
+		temp+=sprintf(buffer+temp,"\tINT");
+	temp+=sprintf(buffer+temp,"\n");
+    
+    if (dump_dwarf)
+		print_addr(find_ip_fn(insn->ip, cr3), insn->ip);
+    for(i=0;i<temp;i++)
+    {
+        instructions[tail]=buffer[i];
+        tail=(tail+1) % BUF_SIZE;
+    }
+}
 
 static void print_insn(struct pt_insn *insn, uint64_t ts,
 		       struct dis *d,
@@ -412,6 +508,7 @@ struct global_pstate {
 	unsigned ratio;
 };
 
+
 static void print_loop(struct sinsn *si, struct local_pstate *ps)
 {
 	if (si->loop_start) {
@@ -447,7 +544,7 @@ static void print_output(struct sinsn *insnbuf, int sic,
 			print_event(si);
 		if (detect_loop && (si->loop_start || si->loop_end))
 			print_loop(si, ps);
-		/* Always print if we have a time (for now) */
+		// Always print if we have a time (for now) 
 		if (si->ts) {
 			print_time(si->ts, &gps->last_ts, &gps->first_ts);
 			if (si->iclass != ptic_call && si->iclass != ptic_far_call) {
@@ -481,7 +578,6 @@ static void print_output(struct sinsn *insnbuf, int sic,
 	}
 }
 
-//Main decoding function
 static int decode(struct pt_insn_decoder *decoder)
 {
 	struct global_pstate gps = { .first_ts = 0, .last_ts = 0 };
@@ -490,46 +586,31 @@ static int decode(struct pt_insn_decoder *decoder)
 	struct dis dis;
 
 	init_dis(&dis);
-	
-
-	//infinte loop in which to decode the trace captured
-	//all the pt_ calls are calls made to libipt functions for decoding purpose
 	for (;;) {
 		uint64_t pos;
 		int err = pt_insn_sync_forward(decoder);
-		
-		//no trace captured or trace is over 
 		if (err < 0) {
 			pt_insn_get_offset(decoder, &pos);
 			printf("%llx: sync forward: %s\n",
 				(unsigned long long)pos,
 				pt_errstr(pt_errcode(err)));
-			//break out of the decoding infinite loop
 			break;
 		}
 
 		memset(&ps, 0, sizeof(struct local_pstate));
 
 		unsigned long insncnt = 0;
-		struct sinsn insnbuf[NINSN]; //instruction buffer
+		struct sinsn insnbuf[NINSN];
 		uint64_t errip = 0;
 		uint32_t prev_ratio = 0;
-		
 		do {
 			int sic = 0;
-			//NINSN=256, so probably there is some decoding in blocks of size of 256 instructions
 			while (!err && sic < NINSN - 1) {
-				
 				struct pt_insn insn;
-				struct pt_asid asid; //related to assembly instruction 
-				
+				struct pt_asid asid;
 				struct sinsn *si = &insnbuf[sic];
 
-				/***********/
-				/*Could not understand as it is almost completely dependant on the libipt library*/
-
-
-				insn.ip = 0; 
+				insn.ip = 0;
 				pt_insn_time(decoder, &si->ts, NULL, NULL);
 				err = pt_insn_next(decoder, &insn, sizeof(struct pt_insn));
 				if (err < 0) {
@@ -540,9 +621,13 @@ static int decode(struct pt_insn_decoder *decoder)
 				pt_insn_asid(decoder, &asid, sizeof(struct pt_asid));
 				si->cr3 = asid.cr3;
 				if (dump_insn)
-					//printing the disasembled instruction
-					print_insn(&insn, si->ts, &dis, si->cr3);
-				insncnt++; //increase the instruction count
+                {   
+                    if(decode_tail)
+					    print_insn_tail(&insn, si->ts, &dis, si->cr3);
+				    else
+                        print_insn(&insn, si->ts, &dis, si->cr3);
+                }
+                insncnt++;
 				uint32_t ratio;
 				si->ratio = 0;
 				pt_insn_core_bus_ratio(decoder, &ratio);
@@ -586,21 +671,15 @@ static int decode(struct pt_insn_decoder *decoder)
 					continue;
 				if (si->ts)
 					last_ts = si->ts;
-
-
-
-				/***********/
 			}
 
-			if (detect_loop)
-				sic = remove_loops(insnbuf, sic);
-			print_output(insnbuf, sic, &ps, &gps);
+			//if (detect_loop)
+			//	sic = remove_loops(insnbuf, sic);
+			//print_output(insnbuf, sic, &ps, &gps);
 		} while (err == 0);
 		if (err == -pte_eos)
 			break;
 		pt_insn_get_offset(decoder, &pos);
-		
-
 		printf("%llx:%llx: error %s\n",
 				(unsigned long long)pos,
 				(unsigned long long)errip,
@@ -609,17 +688,15 @@ static int decode(struct pt_insn_decoder *decoder)
 	return 0;
 }
 
-//print the one time header at the start of the decoded output
-static void print_header(void)
+/*static void print_header(void)
 {
 	printf("%-9s %-5s %13s   %s\n",
 		"TIME",
 		"DELTA",
 		"INSNs",
 		"OPERATION");
-}
+}*/
 
-//usage instructions
 void usage(void)
 {
 	fprintf(stderr, "sptdecode --pt ptfile --elf elffile ...\n");
@@ -627,6 +704,8 @@ void usage(void)
 	fprintf(stderr, "-e/--elf binary[:codebin]  ELF input PT files. Can be specified multiple times.\n");
 	fprintf(stderr, "                   When codebin is specified read code from codebin\n");
 	fprintf(stderr, "-s/--sideband log  Load side band log. Needs access to binaries\n");
+    fprintf(stderr, "-x/--tail Decode just the last 100,000 instructions\n");
+    fprintf(stderr, "-y/--taillength length Set the tail number of instructions to decoded (Default is 100,000)");
 #if defined(HAVE_UDIS86) || defined(HAVE_XED)
 	fprintf(stderr, "--insn/-i	dump instruction bytes and assembler\n");
 #else
@@ -641,13 +720,14 @@ void usage(void)
 	exit(1);
 }
 
-//options for decoding
 struct option opts[] = {
 	{ "elf", required_argument, NULL, 'e' },
 	{ "pt", required_argument, NULL, 'p' },
 	{ "insn", no_argument, NULL, 'i' },
-	{ "sideband", required_argument, NULL, 's' },
-	{ "loop", no_argument, NULL, 'l' },
+	{ "tail", no_argument, NULL, 'x' },
+    { "sideband", required_argument, NULL, 's' },
+    { "taillength", required_argument, NULL, 'y'}, 
+    { "loop", no_argument, NULL, 'l' },
 	{ "tsc", no_argument, NULL, 't' },
 	{ "dwarf", no_argument, NULL, 'd' },
 	{ "kernel", required_argument, NULL, 'k' },
@@ -655,19 +735,19 @@ struct option opts[] = {
 	{ }
 };
 
+
 int main(int ac, char **av)
-{
-	struct pt_config config;
+{   
+	BUF_SIZE=9370000;
+    //instructions= (char*) malloc(BUF_SIZE);
+    struct pt_config config;
 	struct pt_insn_decoder *decoder = NULL;
 	struct pt_image *image = pt_image_alloc("simple-pt");
 	int c;
 	bool use_tsc_time = false;
 	char *kernel_fn = NULL;
 
-	//libipt call (Intel PT) probaby to intiate the decoding
 	pt_config_init(&config);
-
-	//marking appropriate arguments
 	while ((c = getopt_long(ac, av, "e:p:is:ltdk:a", opts, NULL)) != -1) {
 		switch (c) {
 		case 'e':
@@ -688,6 +768,9 @@ int main(int ac, char **av)
 			dump_insn = true;
 			dis_init();
 			break;
+        case 'x':
+            decode_tail=true;
+            break;
 		case 's':
 			if (decoder) {
 				fprintf(stderr, "Sideband must be loaded before --pt\n");
@@ -695,7 +778,12 @@ int main(int ac, char **av)
 			}
 			load_sideband(optarg, image, &config);
 			break;
-		case 'l':
+        case 'y':
+            //printf("YOOOOOOO \n");
+            BUF_SIZE=atoi(optarg);
+            BUF_SIZE *= 93.7;
+            //printf("Optional Arg is %s,   %d\n",optarg,BUF_SIZE+1);
+        case 'l':
 			detect_loop = true;
 			break;
 		case 't':
@@ -716,7 +804,6 @@ int main(int ac, char **av)
 	}
 	if (use_tsc_time)
 		tsc_freq = 0;
-
 	if (decoder) {
 		if (kernel_fn)
 			read_elf(kernel_fn, image, 0, 0, 0, 0);
@@ -726,14 +813,18 @@ int main(int ac, char **av)
 	}
 	if (ac - optind != 0 || !decoder)
 		usage();
-	
-	//calls are made to functions to decode the trace and give the output
-	print_header(); //the header is printed only once
-	decode(decoder); //then the trace is decoded and the disasembled instructions are printed
-
-	//these are calls to the Intel PT libipt code (these functions are not defined in simple-pt)
+	instructions= (char*) malloc(BUF_SIZE);
+    tail=0;
+    memset(instructions,0,sizeof(instructions));
+    //print_header();
+	decode(decoder);
 	pt_image_free(image);
 	pt_insn_free_decoder(decoder);
-	
-	return 0;
+    FILE* fp=fopen("ptdecoded.out","w+");
+    int p;
+    fprintf(fp,"%-9s %-5s %13s   %s\n", "TIME", "DELTA", "INSNs", "OPERATION");
+    for(p=0;p<BUF_SIZE;p++)
+        fprintf(fp,"%c",instructions[(tail+p) % BUF_SIZE]);
+    fclose(fp);
+    return 0;
 }

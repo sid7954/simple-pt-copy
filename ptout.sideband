@@ -1,0 +1,7 @@
+meta family 6
+meta model 94
+meta stepping 3
+meta mtc_freq 0
+1363617.486109 16364 3ff4fe000 400000 0 1000	/workspace/siddhant/simple-pt-nov/simple-pt/test
+1363617.486128 16364 3ff4fe000 7f9bbfc4e000 0 228000	/lib/x86_64-linux-gnu/ld-2.23.so
+1363617.486334 16364 3ff4fe000 7f9bbf885000 0 3c9000	/lib/x86_64-linux-gnu/libc-2.23.so

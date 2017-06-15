@@ -65,10 +65,8 @@
 
 bool abstime;
 
-//#define BUF_SIZE 10000000
 int BUF_SIZE;
-//char instructions[BUF_SIZE];
-char* instructions;
+char* circularbuffer;
 int tail;
 
 /* Includes branches and anything with a time. Always
@@ -189,7 +187,7 @@ static void print_time(uint64_t ts, uint64_t *last_ts,uint64_t *first_ts)
 
 bool dump_insn;
 bool dump_dwarf;
-bool decode_tail;
+bool decode_tail=false; //boolean variable for denoting whether tail is captured or all instructions are disasembled
 
 static char *insn_class(enum pt_insn_class class)
 {
@@ -290,6 +288,7 @@ static void init_dis(struct dis *d)
 	d->info.context = d;
 }
 
+/*Function to print the disasembled instruction when using tail*/
 void dis_print_insn_tail(struct dis *d, struct pt_insn *insn, uint64_t cr3)
 {
 	xed_decoded_inst_t inst;
@@ -315,15 +314,18 @@ void dis_print_insn_tail(struct dis *d, struct pt_insn *insn, uint64_t cr3)
 	d->info.runtime_address = insn->ip;
 	if (!xed_format_generic(&d->info))
 		strcpy(out, "Cannot print");
+	
+	/*Write to the circular buffer: circularbuffer*/
 	//printf("%s", out);
     int i;
     for(i=0;i<strlen(out);i++)                                                                                                                                                                          
     {
-        instructions[tail]=out[i];
+        circularbuffer[tail]=out[i];
         tail=(tail+1) % BUF_SIZE;
     }
 }
 
+/*Function to print the disasembled instruction when not tail*/
 void dis_print_insn(struct dis *d, struct pt_insn *insn, uint64_t cr3)
 {
 	xed_decoded_inst_t inst;
@@ -349,6 +351,7 @@ void dis_print_insn(struct dis *d, struct pt_insn *insn, uint64_t cr3)
 	d->info.runtime_address = insn->ip;
 	if (!xed_format_generic(&d->info))
 		strcpy(out, "Cannot print");
+	/*When not using tail, just print the disasembled instruction on stdout*/
 	printf("%s", out);
 }
 
@@ -360,7 +363,7 @@ static void dis_init(void)
 
 struct dis {};
 static void init_dis(struct dis *d) {}
-void dis_print_insn_tail(struct dis *d, struct pt_insn *insn, uint64_t cr3) {}
+void dis_print_insn_tail(struct dis *d, struct pt_insn *insn, uint64_t cr3) {}   //New function defined to put the disasembled instruction in the circular buffer rather than stdout
 void dis_print_insn(struct dis *d, struct pt_insn *insn, uint64_t cr3) {}
 static void dis_init(void) {}
 
@@ -368,54 +371,57 @@ static void dis_init(void) {}
 
 #define NUM_WIDTH 35
 
-//#define BUF_SIZE 1000
-char buffer[128];
-
-//char instructions[BUF_SIZE];
-//int tail;
-
+/*Function to write the decoded instructions in a circular buffer: circularbuffer instead of printing to stdout*/
 static void print_insn_tail(struct pt_insn *insn, uint64_t ts,
 		       struct dis *d,
 		       uint64_t cr3)
 {
+	char tempbuffer[128]; //temporary buffer to store the decoded instructions
     int i;
 	int n=0;
-	int temp=0;
-    memset(buffer,0,sizeof(buffer));
-    temp+=sprintf(buffer+temp, "%llx %llu %5s insn: ", (unsigned long long)insn->ip, (unsigned long long)ts, insn_class(insn->iclass));
+	int temp=0; //number of characters written in tempbuffer
+    memset(tempbuffer,0,sizeof(tempbuffer)); //clear the tempbuffer
+    temp+=sprintf(tempbuffer+temp, "%llx %llu %5s insn: ", (unsigned long long)insn->ip, (unsigned long long)ts, insn_class(insn->iclass)); //write the Instruction Pointer, timestamp and type of instruction to tempbuffer
     for (i = 0; i < insn->size; i++)
-		n += sprintf(buffer+temp+n,"%02x ", insn->raw[i]); 
+		n += sprintf(tempbuffer+temp+n,"%02x ", insn->raw[i]);   //write the raw instruction to tempbuffer
 	temp+=n;
-    temp+=sprintf(buffer+temp,"%*s", NUM_WIDTH - n, "");   
+    temp+=sprintf(tempbuffer+temp,"%*s", NUM_WIDTH - n, "");   //writing blankspaces to tempbuffer
+    
+    /*Copying tempbuffer to circular buffer*/
     for(i=0;i<temp;i++)                                                                                                                                                                                   
     {
-        instructions[tail]=buffer[i];
+        circularbuffer[tail]=tempbuffer[i];
         tail=(tail+1) % BUF_SIZE;
     }
     
-    dis_print_insn_tail(d,insn,cr3);
+    dis_print_insn_tail(d,insn,cr3); //call function to write the disasembled instruction in the circular buffer
     
-    memset(buffer,0,sizeof(buffer));
+    memset(tempbuffer,0,sizeof(tempbuffer));
     temp=0;
+
+    /*If an instruction is enabled, disabled, resumed or interrupted, the appropriate flag is written to tempbuffer*/
     if (insn->enabled)
-		temp+=sprintf(buffer+temp,"\tENA");
+		temp+=sprintf(tempbuffer+temp,"\tENA");
 	if (insn->disabled)
-		temp+=sprintf(buffer+temp,"\tDIS");
+		temp+=sprintf(tempbuffer+temp,"\tDIS");
 	if (insn->resumed)
-		temp+=sprintf(buffer+temp,"\tRES");
+		temp+=sprintf(tempbuffer+temp,"\tRES");
 	if (insn->interrupted)
-		temp+=sprintf(buffer+temp,"\tINT");
-	temp+=sprintf(buffer+temp,"\n");
+		temp+=sprintf(tempbuffer+temp,"\tINT");
+	temp+=sprintf(tempbuffer+temp,"\n"); //newline written to the tempbuffer
     
     if (dump_dwarf)
 		print_addr(find_ip_fn(insn->ip, cr3), insn->ip);
+
+	/*Copying tempbuffer to circular buffer*/
     for(i=0;i<temp;i++)
     {
-        instructions[tail]=buffer[i];
+        circularbuffer[tail]=tempbuffer[i];
         tail=(tail+1) % BUF_SIZE;
     }
 }
 
+/*Function to print the tail of the decoded instructions*/
 static void print_insn(struct pt_insn *insn, uint64_t ts,
 		       struct dis *d,
 		       uint64_t cr3)
@@ -590,6 +596,7 @@ static int decode(struct pt_insn_decoder *decoder)
 		uint64_t pos;
 		int err = pt_insn_sync_forward(decoder);
 		if (err < 0) {
+			//Capture end of trace
 			pt_insn_get_offset(decoder, &pos);
 			printf("%llx: sync forward: %s\n",
 				(unsigned long long)pos,
@@ -622,7 +629,8 @@ static int decode(struct pt_insn_decoder *decoder)
 				si->cr3 = asid.cr3;
 				if (dump_insn)
                 {   
-                    if(decode_tail)
+                	/*If the flag for tail is set, the appropriate function call is made*/
+                    if(decode_tail) 
 					    print_insn_tail(&insn, si->ts, &dis, si->cr3);
 				    else
                         print_insn(&insn, si->ts, &dis, si->cr3);
@@ -688,14 +696,14 @@ static int decode(struct pt_insn_decoder *decoder)
 	return 0;
 }
 
-/*static void print_header(void)
+static void print_header(void)
 {
 	printf("%-9s %-5s %13s   %s\n",
 		"TIME",
 		"DELTA",
 		"INSNs",
 		"OPERATION");
-}*/
+}
 
 void usage(void)
 {
@@ -724,9 +732,9 @@ struct option opts[] = {
 	{ "elf", required_argument, NULL, 'e' },
 	{ "pt", required_argument, NULL, 'p' },
 	{ "insn", no_argument, NULL, 'i' },
-	{ "tail", no_argument, NULL, 'x' },
+	{ "tail", no_argument, NULL, 'x' }, //New flag is added to capture the tail of decoded instructions
     { "sideband", required_argument, NULL, 's' },
-    { "taillength", required_argument, NULL, 'y'}, 
+    { "taillength", required_argument, NULL, 'y'}, //New flag added to change the number of instructions in the tail (Argument should be number of instructions needed in the tail)
     { "loop", no_argument, NULL, 'l' },
 	{ "tsc", no_argument, NULL, 't' },
 	{ "dwarf", no_argument, NULL, 'd' },
@@ -738,8 +746,7 @@ struct option opts[] = {
 
 int main(int ac, char **av)
 {   
-	BUF_SIZE=9370000;
-    //instructions= (char*) malloc(BUF_SIZE);
+	BUF_SIZE=9370000; //Default circular buffer size is set to capture around 100,000 instructions
     struct pt_config config;
 	struct pt_insn_decoder *decoder = NULL;
 	struct pt_image *image = pt_image_alloc("simple-pt");
@@ -768,7 +775,7 @@ int main(int ac, char **av)
 			dump_insn = true;
 			dis_init();
 			break;
-        case 'x':
+        case 'x': 	//If tail needs to captured
             decode_tail=true;
             break;
 		case 's':
@@ -778,11 +785,9 @@ int main(int ac, char **av)
 			}
 			load_sideband(optarg, image, &config);
 			break;
-        case 'y':
-            //printf("YOOOOOOO \n");
+        case 'y': //Setting circular buffer size to capture the argument number of instructions in the tail
             BUF_SIZE=atoi(optarg);
             BUF_SIZE *= 93.7;
-            //printf("Optional Arg is %s,   %d\n",optarg,BUF_SIZE+1);
         case 'l':
 			detect_loop = true;
 			break;
@@ -813,18 +818,25 @@ int main(int ac, char **av)
 	}
 	if (ac - optind != 0 || !decoder)
 		usage();
-	instructions= (char*) malloc(BUF_SIZE);
-    tail=0;
-    memset(instructions,0,sizeof(instructions));
-    //print_header();
+	circularbuffer= (char*) malloc(BUF_SIZE); //allocating size to circular buffer
+    tail=0; //initializig head of the buffer to start
+    memset(circularbuffer,0,sizeof(circularbuffer)); //clearing the circular buffer
+    if(!decode_tail) //Print headers to std out only when all instructions are to be decoded
+    {
+    	print_header();
+	}
 	decode(decoder);
 	pt_image_free(image);
 	pt_insn_free_decoder(decoder);
-    FILE* fp=fopen("ptdecoded.out","w+");
-    int p;
-    fprintf(fp,"%-9s %-5s %13s   %s\n", "TIME", "DELTA", "INSNs", "OPERATION");
-    for(p=0;p<BUF_SIZE;p++)
-        fprintf(fp,"%c",instructions[(tail+p) % BUF_SIZE]);
-    fclose(fp);
+	if(decode_tail) //If tail is to be decoded
+	{	
+		/*Circular buffer is written to a file*/
+	    FILE* fp=fopen("ptdecoded.out","w+");
+	    int p;
+	    fprintf(fp,"%-9s %-5s %13s   %s\n", "TIME", "DELTA", "INSNs", "OPERATION"); //header 
+	    for(p=0;p<BUF_SIZE;p++)
+	        fprintf(fp,"%c",circularbuffer[(tail+p) % BUF_SIZE]);
+	    fclose(fp);
+    }
     return 0;
 }
